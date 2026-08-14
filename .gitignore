@@ -1,0 +1,6 @@
+data/
+*.csv
+warehouse.duckdb
+__pycache__/
+*.pyc
+.venv/
