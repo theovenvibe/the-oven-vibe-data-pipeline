@@ -87,6 +87,7 @@ def main():
 
     build_item_prices(con)
     build_data_quality(con)
+    build_combined_weekly_sales(con)
 
     for table in (
         "weekly_sales",
@@ -95,6 +96,7 @@ def main():
         "ops_quality",
         "item_prices",
         "data_quality",
+        "combined_weekly_sales",
     ):
         n = con.execute(f"SELECT count(*) FROM gold.{table}").fetchone()[0]
         print(f"gold.{table}: {n} rows")
@@ -213,6 +215,63 @@ def build_item_prices(con):
         "INSERT INTO gold.item_prices VALUES (?, ?, ?, ?, ?)",
         [(name, *vals) for name, vals in prices.items()],
     )
+
+
+def build_combined_weekly_sales(con):
+    """Phase 8 (backend PRD §11 row 8) — direct D1 orders and Zomato orders,
+    side by side by week, tagged by `source`. Deliberately a UNION, never a
+    JOIN: the two systems key customers differently (this repo's Zomato
+    export by a frequently-masked `Customer Phone`; the backend by a
+    normalised 10-digit phone it owns end to end) and blending them into one
+    customer identity here would produce false merges with no way to verify
+    them — see pipeline/direct.py's own note. This table answers "how much
+    business came through which channel," not "who is the same person on
+    both."
+
+    `silver.direct_orders` only exists once `pipeline.direct` has run at
+    least once (it needs `OVEN_VIBE_ADMIN_TOKEN`); when it's absent this
+    still produces a valid Zomato-only table so `gold.py` never breaks on an
+    older warehouse or a token-less run — same degrade-gracefully contract
+    the dashboard repo's `analytics.py` already follows for gold.item_prices
+    etc.
+    """
+    has_direct = con.execute("""
+        SELECT count(*) FROM information_schema.tables
+        WHERE table_schema = 'silver' AND table_name = 'direct_orders'
+    """).fetchone()[0] > 0
+
+    con.execute("DROP TABLE IF EXISTS gold.combined_weekly_sales")
+    zomato_select = """
+        SELECT
+            date_trunc('week', order_placed_at) AS week_start,
+            'zomato' AS source,
+            count(*) AS order_count,
+            count(*) FILTER (WHERE order_status = 'Delivered') AS confirmed_count,
+            sum(total) FILTER (WHERE order_status = 'Delivered') AS revenue
+        FROM silver.orders
+        GROUP BY 1, 2
+    """
+    if has_direct:
+        con.execute(f"""
+            CREATE TABLE gold.combined_weekly_sales AS
+            {zomato_select}
+            UNION ALL
+            SELECT
+                date_trunc('week', order_placed_at) AS week_start,
+                'direct' AS source,
+                count(*) AS order_count,
+                count(*) AS confirmed_count,  -- silver.direct_orders is confirmed-only by construction (PRD §7.3)
+                sum(total) AS revenue
+            FROM silver.direct_orders
+            GROUP BY 1, 2
+            ORDER BY 1, 2
+        """)
+    else:
+        con.execute(f"""
+            CREATE TABLE gold.combined_weekly_sales AS
+            {zomato_select}
+            ORDER BY 1, 2
+        """)
 
 
 def _find_week_gaps():

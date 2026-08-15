@@ -13,4 +13,9 @@ uv run python main.py              # run pipeline once
 uv run python watch_pipeline.py    # auto-rebuild on changes under data/
 ```
 
+Optionally also pulls confirmed direct orders from `../the-oven-vibe-backend`'s
+D1 database (Phase 8) — copy `.env.example` to `.env`, fill in
+`OVEN_VIBE_ADMIN_TOKEN`, and `source ./.env` (or export it) before running.
+Skipped quietly when unset.
+
 See `CLAUDE.md` / `AGENT.md` for architecture details and operating notes.

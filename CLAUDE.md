@@ -35,7 +35,8 @@ uv run python watch_pipeline.py    # watches data/ (order_history CSVs + menu.cs
 ```
 
 Each layer is also runnable standalone and is idempotent (drop+recreate):
-`uv run python -m pipeline.bronze`, `pipeline.silver`, `pipeline.menu`, `pipeline.gold`.
+`uv run python -m pipeline.bronze`, `pipeline.silver`, `pipeline.menu`, `pipeline.gold`,
+`pipeline.direct` (needs `OVEN_VIBE_ADMIN_TOKEN` — see below).
 
 ## Architecture
 
@@ -75,6 +76,20 @@ Each layer is also runnable standalone and is idempotent (drop+recreate):
 - **Hard constraint:** never rename or drop existing columns in
   `silver.orders` or `silver.order_items` — the dashboard's `build.py` reads
   them by name. New fields are additive only.
+
+## `pipeline/direct.py` — Phase 8, direct orders from the backend
+
+Pulls confirmed direct orders from `../the-oven-vibe-backend`'s D1 via
+`GET /admin/api/export/orders` on the deployed Worker and loads
+`bronze.direct_orders_raw` / `silver.direct_orders` / `silver.direct_order_items`
+(`source = 'direct'`). Needs `OVEN_VIBE_ADMIN_TOKEN` in the environment
+(`.env.example` has the shape; `main.py` skips this stage quietly when it's
+unset). `gold.py`'s `build_combined_weekly_sales` unions this with
+`silver.orders` (Zomato) into `gold.combined_weekly_sales`, by week and
+`source` — a UNION, not a JOIN, since the two systems key customer identity
+differently and merging them would produce unverifiable false matches. See
+`AGENT.md`'s "Phase 8" section for the full reasoning, including why this
+isn't a true unattended nightly cron.
 
 ## Conventions
 
