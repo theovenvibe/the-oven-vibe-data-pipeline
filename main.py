@@ -2,7 +2,7 @@
 
 import os
 
-from pipeline import bronze, silver, menu, gold, direct
+from pipeline import bronze, silver, menu, gold, direct, dough
 
 
 def main():
@@ -15,8 +15,12 @@ def main():
     # Zomato-only pipeline this repo has always run keeps working unchanged.
     if os.environ.get("OVEN_VIBE_ADMIN_TOKEN"):
         direct.main()
+        # Phase 9 of the Dough plan — the loyalty ledger, balances and
+        # referrals, so "how much Dough does this number have and where did it
+        # come from" is answerable from this laptop without a Cloudflare login.
+        dough.main()
     else:
-        print("skipping pipeline.direct: OVEN_VIBE_ADMIN_TOKEN not set (see .env.example)")
+        print("skipping pipeline.direct and pipeline.dough: OVEN_VIBE_ADMIN_TOKEN not set (see .env.example)")
     gold.main()
 
 

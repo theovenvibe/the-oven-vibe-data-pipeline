@@ -91,6 +91,24 @@ differently and merging them would produce unverifiable false matches. See
 `AGENT.md`'s "Phase 8" section for the full reasoning, including why this
 isn't a true unattended nightly cron.
 
+## `pipeline/dough.py` — Phase 9, the loyalty ledger
+
+Pulls `GET /admin/api/export/dough` into `bronze.dough_*`, `silver.dough_ledger`
+/ `silver.dough_balances` / `silver.referrals`, and two gold views. Same token
+as `direct.py`; `main.py` runs it right after `direct.main()` and skips both
+quietly when the token is unset.
+
+**The ledger is the truth; `customers.dough_balance` is a cache the backend
+writes in the same transaction.** `silver.dough_balances_derived` recomputes the
+balance from the ledger and `gold.dough_balance_check` lists any customer where
+the two disagree — that view should always be empty, and a row in it means a bug
+or a hand-edited database. `gold.dough_customers` is the everyday one: balance,
+expiry, code, earned and spent all-time.
+
+`sync-nightly.sh` + a systemd timer (`docs/NIGHTLY_SYNC.md`) runs the whole
+pipeline at 02:30 with `Persistent=true`, so a laptop that was shut syncs when
+it next wakes. Offline exits 0 — not a failure worth an alert at 2am.
+
 ## Conventions
 
 - Update this file, `AGENT.md`, `README.md`, and memory after completing
