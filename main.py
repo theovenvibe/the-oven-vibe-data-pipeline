@@ -13,7 +13,7 @@ with no Cloudflare session. That is an explicit choice now, not a default.
 import os
 import sys
 
-from pipeline import bronze, silver, menu, gold, direct, dough
+from pipeline import bronze, silver, menu, gold, direct, dough, d1_tables
 
 
 def main():
@@ -31,6 +31,11 @@ def main():
         try:
             direct.main()
             dough.main()
+            # Everything else in D1, mirrored raw into its own `d1` schema —
+            # stock, campaigns, rejections, demand signals, kitchen hours.
+            # A separate stream from the Zomato exports, deliberately not
+            # joined to them.
+            d1_tables.main()
         except SystemExit as e:
             print(f"\n✗ The D1 pull failed, so the warehouse is NOT up to date.\n\n{e}\n", file=sys.stderr)
             print("  Re-run with OVEN_VIBE_SKIP_D1=1 to rebuild from Zomato alone.", file=sys.stderr)
