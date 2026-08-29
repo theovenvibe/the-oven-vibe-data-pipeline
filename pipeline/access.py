@@ -12,13 +12,14 @@ for the same Worker. Kept as a copy rather than a shared package because the
 two repos are independently installable and a broken import between them would
 take out both; the cost is that a fix here belongs there too.
 
-The cookie is read straight out of the Chrome profile you are already signed
-in with. **Nothing is written to disk** — the cookie lives in memory for the
+The cookie is read straight out of whichever Chromium browser you are already
+signed in with — Brave, Chrome, Chromium or Edge, tried in that order.
+**Nothing is written to disk** — the cookie lives in memory for the
 length of the run, because a Cloudflare Access session copied into a file is a
 login somebody else can use.
 
-Chrome usually has to be fully closed: it holds a lock on its cookie database
-while running.
+The browser usually has to be fully closed: it holds a lock on its cookie
+database while running.
 
 The long-term fix is a Cloudflare Access **service token**
 (`CF-Access-Client-Id` / `CF-Access-Client-Secret`), which would let this run
@@ -93,22 +94,39 @@ def access_cookie() -> str:
         )
 
     host = urllib.parse.urlsplit(worker_url()).hostname or ""
-    try:
-        jar = browser_cookie3.chrome(domain_name=host)
-    except Exception as e:
-        raise AccessError(
-            f"Could not read Chrome's cookies: {e}\n"
-            "  Chrome locks its cookie database while it is running — close it fully and retry."
-        )
 
-    for cookie in jar:
-        if cookie.name == "CF_Authorization":
-            return cookie.value
+    # Try every Chromium browser on the machine, not just Chrome. Milan moved
+    # to Brave mid-2026 and the sync silently stopped finding a cookie —
+    # "signed in but no cookie" reads like an expired session rather than
+    # "wrong browser", which is the sort of wrong diagnosis that costs an hour.
+    readers = [
+        ("Brave", browser_cookie3.brave),
+        ("Chrome", browser_cookie3.chrome),
+        ("Chromium", browser_cookie3.chromium),
+        ("Edge", browser_cookie3.edge),
+    ]
+
+    problems = []
+    for name, reader in readers:
+        try:
+            jar = reader(domain_name=host)
+        except Exception as e:
+            # No such browser installed, or its cookie DB is locked because it
+            # is running. Neither is fatal while another browser might have it.
+            problems.append(f"{name}: {e}")
+            continue
+        for cookie in jar:
+            if cookie.name == "CF_Authorization":
+                return cookie.value
+        problems.append(f"{name}: no CF_Authorization cookie for {host}")
 
     raise AccessError(
-        "Signed in to Chrome, but there is no CF_Authorization cookie for the Worker.\n"
-        f"  Open {worker_url()}/admin in Chrome, sign in through Cloudflare Access,\n"
-        "  then run this again. Use the Cloudflare sign-in button, not the PIN email."
+        f"No Cloudflare Access session found for {host} in any browser.\n"
+        f"  Open {worker_url()}/admin in your browser, sign in through Cloudflare\n"
+        "  Access, then run this again. Use the Cloudflare sign-in button, not the\n"
+        "  PIN email. A browser locks its cookie database while running, so close\n"
+        "  it fully if it is the one you signed in with.\n"
+        "  Tried:\n    " + "\n    ".join(problems)
     )
 
 
