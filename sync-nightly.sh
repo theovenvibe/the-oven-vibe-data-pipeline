@@ -9,7 +9,7 @@
 set -uo pipefail
 cd "$(dirname "$0")" || exit 1
 
-if ! curl -fsS --max-time 10 -o /dev/null https://oven-vibe-backend.theovenvibe.workers.dev/availability; then
+if ! curl -fsS --max-time 10 -o /dev/null https://api.theovenvibe.com/availability; then
   echo "$(date -Is) offline or the Worker is unreachable — skipping"
   exit 0
 fi
