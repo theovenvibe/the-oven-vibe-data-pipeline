@@ -10,6 +10,29 @@ That pulls direct orders and the Dough ledger from D1, re-derives everything
 from the Zomato exports on disk, and rebuilds the dashboard. **Chrome must be
 signed in to the admin** — see below for why.
 
+## What comes down
+
+| | into | from |
+|---|---|---|
+| Confirmed direct orders + their items | `silver.direct_orders`, `silver.direct_order_items` | `/admin/api/export/orders` |
+| Dough ledger, balances, referrals | `silver.dough_*`, `silver.referrals` | `/admin/api/export/dough` |
+| **Everything else in D1, raw** — stock batches and moves, campaigns and claims, rejected orders, demand signals, kitchen open/close history, settings | **`d1.*`** | `/admin/api/export/tables` |
+| Zomato weekly exports | `bronze.*`, `silver.orders`, `gold.*` | CSVs on disk |
+
+The `d1` schema is its own stream. **Zomato is a separate business channel**
+that happens to land in the same DuckDB file — nothing in `d1.*` is joined to
+it, and nothing should be. `d1.stock_moves` means "the live table in
+Cloudflare", never something derived from a CSV.
+
+Two things are deliberately withheld from `d1.*`: the push subscription keys
+(`endpoint`, `p256dh`, `auth`), which are credentials for sending
+notifications to a device, and any table not on the allowlist in
+`the-oven-vibe-backend/src/analytics-export.ts`.
+
+The orders export carries **confirmed** orders only — a click is not an order —
+and drops test orders, so `d1`-side counts and `silver.direct_orders` will not
+match `SELECT COUNT(*) FROM orders` in D1. That is correct, not drift.
+
 ## The two locks, and why this needs a browser
 
 `/admin/*` sits behind Cloudflare Access, so an `ADMIN_TOKEN` on its own gets
