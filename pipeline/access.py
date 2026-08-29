@@ -55,10 +55,10 @@ def _from_env_file(key: str) -> str | None:
             return value.strip().strip("'\"") or None
     return None
 
-BASE = "https://oven-vibe-backend.theovenvibe.workers.dev"
+BASE = "https://api.theovenvibe.com"
 
 # Cloudflare's bot protection (error 1010) blocks Python's default urllib
-# User-Agent on *.workers.dev; a normal-looking one clears it. Not a security
+# User-Agent on the Worker's hosts; a normal-looking one clears it. Not a security
 # control on our side either way — the real gates are the two below.
 USER_AGENT = "Mozilla/5.0 (compatible; oven-vibe-data-pipeline/1.0)"
 
