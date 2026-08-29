@@ -4,6 +4,10 @@ version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.12"
 dependencies = [
+    # Reads the Cloudflare Access session out of signed-in Chrome, because
+    # /admin/* is behind Access and a bearer token alone gets a login page.
+    # See pipeline/access.py.
+    "browser-cookie3>=0.20.1",
     "duckdb>=1.5.5",
     "watchdog>=6.0.0",
 ]

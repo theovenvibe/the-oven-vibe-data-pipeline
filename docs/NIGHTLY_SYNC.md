@@ -1,4 +1,47 @@
-# The nightly sync
+# Syncing the warehouse
+
+## The short version
+
+```bash
+ov sync
+```
+
+That pulls direct orders and the Dough ledger from D1, re-derives everything
+from the Zomato exports on disk, and rebuilds the dashboard. **Chrome must be
+signed in to the admin** — see below for why.
+
+## The two locks, and why this needs a browser
+
+`/admin/*` sits behind Cloudflare Access, so an `ADMIN_TOKEN` on its own gets
+a **302 to a sign-in page**, not data. `pipeline/access.py` therefore sends
+both: the bearer token from `.env`, and the `CF_Authorization` cookie read
+straight out of your signed-in Chrome profile. Nothing is written to disk —
+an Access session copied into a file is a login somebody else can use.
+
+So the requirements for `ov sync` are:
+
+1. `.env` exists with `OVEN_VIBE_ADMIN_TOKEN` (the value lives in
+   `~/workbench/the-oven-vibe/CREDENTIALS.local.md`, outside every git repo)
+2. You have signed into the admin in Chrome at some point in the last 30 days
+
+If the session has expired, the sync stops and says so. It does **not**
+continue with stale numbers.
+
+`OVEN_VIBE_SKIP_D1=1 ov sync` rebuilds from the Zomato exports alone, on
+purpose. Between 19 and 29 August that skip was the *default* and silent, so
+the sync reported success while `silver.direct_orders` held zero rows. It is
+an explicit choice now.
+
+## What would make this unattended
+
+A Cloudflare Access **service token** (`CF-Access-Client-Id` /
+`CF-Access-Client-Secret`), created in the Cloudflare dashboard and sent as
+headers by `pipeline/access.py`. With one, no browser is involved and the
+timer below becomes worth installing. Without one, a 2:30am run cannot work,
+because reading Chrome's cookie database needs Chrome closed and a human who
+signed in this month.
+
+## The nightly timer (not installed — needs the service token first)
 
 Pulls Zomato CSVs, direct orders and the Dough ledger into `warehouse.duckdb`,
 so every question is answerable from this laptop without a Cloudflare login.

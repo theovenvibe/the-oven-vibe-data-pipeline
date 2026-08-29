@@ -18,46 +18,19 @@ whose balance nobody can audit is a scheme you cannot defend to a customer.
 """
 
 import json
-import os
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 import duckdb
 
+from pipeline import access
+
 ROOT_DIR = Path(__file__).parent.parent
 DB_FILE = ROOT_DIR / "warehouse.duckdb"
 
-DEFAULT_WORKER_URL = "https://oven-vibe-backend.theovenvibe.workers.dev"
-
 
 def _fetch_snapshot() -> dict:
-    worker_url = os.environ.get("OVEN_VIBE_WORKER_URL", DEFAULT_WORKER_URL).rstrip("/")
-    token = os.environ.get("OVEN_VIBE_ADMIN_TOKEN")
-    if not token:
-        raise SystemExit(
-            "OVEN_VIBE_ADMIN_TOKEN is not set. Copy .env.example to .env and fill it in "
-            "(see ~/workbench/the-oven-vibe/CREDENTIALS.local.md for the value)."
-        )
-
-    req = urllib.request.Request(
-        f"{worker_url}/admin/api/export/dough",
-        headers={
-            "Authorization": f"Bearer {token}",
-            # Same reason as direct.py: Cloudflare's bot protection blocks
-            # Python's default User-Agent on *.workers.dev.
-            "User-Agent": "Mozilla/5.0 (compatible; oven-vibe-data-pipeline/1.0)",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        raise SystemExit(
-            f"dough export failed: HTTP {e.code} {e.reason} — {e.read().decode(errors='replace')}"
-        )
-    except urllib.error.URLError as e:
-        raise SystemExit(f"dough export failed: could not reach {worker_url} ({e.reason})")
+    """The Dough ledger snapshot. Same two locks as direct.py."""
+    return access.fetch_admin_json("/admin/api/export/dough")
 
 
 def main() -> None:
