@@ -21,8 +21,10 @@ Credentials: `OVEN_VIBE_WORKER_URL` (defaults to the live Worker) and
 `~/workbench/the-oven-vibe/CREDENTIALS.local.md`, which sits outside every
 git repo). Read from the environment, never hard-coded or committed;
 `.env.example` documents the shape and `.env` (gitignored) holds the real
-value locally. The nightly GitHub Actions workflow
-(`.github/workflows/nightly-sync.yml`) supplies the same two as repo secrets.
+value locally. There is no CI workflow for this — an
+earlier version of this docstring claimed `.github/workflows/nightly-sync.yml`
+existed; it never did, and it could not work anyway while Access needs a
+browser session (see `pipeline/access.py`).
 
 **Identity, deliberately not merged with Zomato's:** this backend keys
 customers by phone (10-digit, normalised); Zomato's export has its own
@@ -36,51 +38,24 @@ measure (PRD §12).
 """
 
 import json
-import os
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 import duckdb
 
+from pipeline import access
+
 ROOT_DIR = Path(__file__).parent.parent
 DB_FILE = ROOT_DIR / "warehouse.duckdb"
 
-DEFAULT_WORKER_URL = "https://oven-vibe-backend.theovenvibe.workers.dev"
-
 
 def _fetch_snapshot() -> dict:
-    worker_url = os.environ.get("OVEN_VIBE_WORKER_URL", DEFAULT_WORKER_URL).rstrip("/")
-    token = os.environ.get("OVEN_VIBE_ADMIN_TOKEN")
-    if not token:
-        raise SystemExit(
-            "OVEN_VIBE_ADMIN_TOKEN is not set. Copy .env.example to .env and fill it in "
-            "(see ~/workbench/the-oven-vibe/CREDENTIALS.local.md for the value), or export "
-            "it in the shell/CI secret running this."
-        )
+    """The full order snapshot, through both of Cloudflare's locks.
 
-    req = urllib.request.Request(
-        f"{worker_url}/admin/api/export/orders",
-        headers={
-            "Authorization": f"Bearer {token}",
-            # Cloudflare's bot protection (error 1010) blocks Python's
-            # default urllib User-Agent on *.workers.dev; a normal-looking
-            # one clears it. Not a security control on our side either way —
-            # the real gate is the ADMIN_TOKEN check above.
-            "User-Agent": "Mozilla/5.0 (compatible; oven-vibe-data-pipeline/1.0)",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            payload = json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        raise SystemExit(f"export pull failed: HTTP {e.code} {e.reason} — {e.read().decode(errors='replace')}")
-    except urllib.error.URLError as e:
-        raise SystemExit(f"export pull failed: could not reach {worker_url} ({e.reason})")
-
-    if not payload.get("ok"):
-        raise SystemExit(f"export pull failed: Worker returned {payload}")
-    return payload
+    Access blocks a bearer-token-only request with a redirect to a sign-in
+    page, which is why this went ten days importing nothing — see
+    pipeline/access.py.
+    """
+    return access.fetch_admin_json("/admin/api/export/orders")
 
 
 def main():
