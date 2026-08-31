@@ -108,8 +108,23 @@ def service_token() -> tuple[str, str] | None:
     return None
 
 
-def access_cookie() -> str:
-    """The Cloudflare Access cookie out of your signed-in Chrome."""
+def access_cookies() -> list[tuple[str, str]]:
+    """Every browser session on this machine, as (browser name, Cookie header).
+
+    Plural on purpose. The old version returned the first browser that had a
+    cookie at all and stopped there, which on 2026-08-31 meant Brave -- whose
+    `CF_Authorization` was unexpired and carried the right `aud`, and which
+    Access refused anyway. Chrome's session, sitting right beside it, worked.
+    An unexpired cookie is not a valid session, and only the endpoint can say
+    which is which, so every candidate is returned for the caller to try.
+
+    Both of them, not just `CF_Authorization`. Access also sets `CF_AppSession`,
+    and on 2026-08-31 sending the identity cookie alone got the sign-in page back
+    with an unexpired, correct-`aud` token in hand -- which reads exactly like an
+    expired session and is not one. Sending whatever Access set, rather than the
+    one cookie we think matters, is also the version that keeps working if
+    Cloudflare adds a third.
+    """
     try:
         import browser_cookie3
     except ImportError:
@@ -131,6 +146,7 @@ def access_cookie() -> str:
     ]
 
     problems = []
+    sessions = []
     for name, reader in readers:
         try:
             jar = reader(domain_name=host)
@@ -139,10 +155,18 @@ def access_cookie() -> str:
             # is running. Neither is fatal while another browser might have it.
             problems.append(f"{name}: {e}")
             continue
-        for cookie in jar:
-            if cookie.name == "CF_Authorization":
-                return cookie.value
-        problems.append(f"{name}: no CF_Authorization cookie for {host}")
+        found = {c.name: c.value for c in jar if c.name.startswith("CF_")}
+        # CF_Authorization is the identity; without it there is no session at
+        # all, whatever else is in the jar. CF_AppSession rides along because
+        # Access sets it too and sending only the identity cookie gets the
+        # sign-in page back.
+        if "CF_Authorization" in found:
+            sessions.append((name, "; ".join(f"{k}={v}" for k, v in found.items())))
+        else:
+            problems.append(f"{name}: no CF_Authorization cookie for {host}")
+
+    if sessions:
+        return sessions
 
     raise AccessError(
         f"No Cloudflare Access session found for {host} in any browser.\n"
@@ -190,27 +214,39 @@ def fetch_admin_json(path: str, timeout: int = 30) -> dict:
     # machine at all. Reading the cookie jar is only attempted when there is no
     # service token, because on a headless run it can only fail.
     pair = service_token()
+    # One attempt with the service token; otherwise one attempt per browser
+    # session, because a browser having a cookie does not mean Access accepts it
+    # and the endpoint is the only thing that can tell us.
+    attempts = [("service token", None)] if pair else access_cookies()
     if pair:
         headers["CF-Access-Client-Id"], headers["CF-Access-Client-Secret"] = pair
-    else:
-        headers["Cookie"] = f"CF_Authorization={access_cookie()}"
-    req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            content_type = resp.headers.get("Content-Type", "")
-            body = resp.read()
-    except urllib.error.HTTPError as e:
-        if e.code in (301, 302, 303, 307, 308, 403):
-            raise AccessError(
-                f"Cloudflare Access refused {path} (HTTP {e.code}).\n  " + _retry_hint()
-            )
-        raise AccessError(f"{path} failed: HTTP {e.code} {e.reason} — {e.read().decode(errors='replace')[:400]}")
-    except urllib.error.URLError as e:
-        raise AccessError(f"{path} failed: could not reach {worker_url()} ({e.reason})")
 
-    if "application/json" not in content_type:
+    refused = []
+    for who, cookie in attempts:
+        if cookie is not None:
+            headers["Cookie"] = cookie
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                content_type = resp.headers.get("Content-Type", "")
+                body = resp.read()
+        except urllib.error.HTTPError as e:
+            if e.code in (301, 302, 303, 307, 308, 403):
+                refused.append(f"{who}: HTTP {e.code}")
+                continue
+            raise AccessError(f"{path} failed: HTTP {e.code} {e.reason} — {e.read().decode(errors='replace')[:400]}")
+        except urllib.error.URLError as e:
+            raise AccessError(f"{path} failed: could not reach {worker_url()} ({e.reason})")
+
+        if "application/json" in content_type:
+            break
+        # Access answers an unauthenticated request with a sign-in *page* and a
+        # 200, so HTML here is a refusal, not data.
+        refused.append(f"{who}: sign-in page")
+    else:
         raise AccessError(
-            f"Cloudflare Access served a sign-in page instead of {path}.\n  " + _retry_hint()
+            f"Cloudflare Access refused {path} for every credential on this machine.\n"
+            f"  Tried: {', '.join(refused)}\n  " + _retry_hint()
         )
 
     payload = json.loads(body)
