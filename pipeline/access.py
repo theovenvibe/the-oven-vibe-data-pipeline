@@ -21,10 +21,12 @@ login somebody else can use.
 The browser usually has to be fully closed: it holds a lock on its cookie
 database while running.
 
-The long-term fix is a Cloudflare Access **service token**
-(`CF-Access-Client-Id` / `CF-Access-Client-Secret`), which would let this run
-unattended from a timer with no browser involved. Until that exists in the
-Cloudflare dashboard, this is what makes a manual `ov sync` work.
+A Cloudflare Access **service token** (`CF-Access-Client-Id` /
+`CF-Access-Client-Secret`) is the way past this without a browser at all, and
+it is what runs first when `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET`
+are set. That is the path a cron takes: no browser to close, no session to
+expire, no human. The browser-cookie reader below is the fallback for a laptop
+that has not had the service token set up yet.
 """
 
 import json
@@ -84,6 +86,28 @@ def admin_token() -> str:
     return token
 
 
+def service_token() -> tuple[str, str] | None:
+    """The Access service-token pair, if one is configured.
+
+    A service token is a machine identity Cloudflare Access accepts in place of
+    a signed-in human. It never expires on a session timer, so this is the only
+    version of the D1 pull that can run from a cron at 3am. Both halves must be
+    present -- half a credential is a misconfiguration, not a fallback, and
+    silently dropping to the browser reader would hide it.
+    """
+    cid = os.environ.get("CF_ACCESS_CLIENT_ID") or _from_env_file("CF_ACCESS_CLIENT_ID")
+    secret = os.environ.get("CF_ACCESS_CLIENT_SECRET") or _from_env_file("CF_ACCESS_CLIENT_SECRET")
+    if cid and secret:
+        return cid, secret
+    if cid or secret:
+        raise AccessError(
+            "Only half of the Access service token is set.\n"
+            "  Both CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET are needed —\n"
+            "  see docs/UNATTENDED-SYNC.md for where they come from."
+        )
+    return None
+
+
 def access_cookie() -> str:
     """The Cloudflare Access cookie out of your signed-in Chrome."""
     try:
@@ -130,6 +154,25 @@ def access_cookie() -> str:
     )
 
 
+def _retry_hint() -> str:
+    """Say what to do about it, which depends on which credential was used.
+
+    Telling someone to sign in to Chrome when a cron ran with a service token
+    sends them to fix the wrong thing.
+    """
+    if service_token():
+        return (
+            "The service token was rejected. Check it is still listed under\n"
+            "  Zero Trust -> Access -> Service Auth, and that the /admin policy still\n"
+            "  includes it — see docs/UNATTENDED-SYNC.md."
+        )
+    return (
+        "The sign-in has expired. Open the admin in your browser, sign in, close the\n"
+        "  browser fully, and retry — or set up a service token so this never happens\n"
+        "  again (docs/UNATTENDED-SYNC.md)."
+    )
+
+
 def fetch_admin_json(path: str, timeout: int = 30) -> dict:
     """GET an /admin/api/* endpoint carrying both locks, or fail saying which one.
 
@@ -139,14 +182,19 @@ def fetch_admin_json(path: str, timeout: int = 30) -> dict:
     is how a sync ends up reporting success with nothing in it.
     """
     url = f"{worker_url()}{path}"
-    req = urllib.request.Request(
-        url,
-        headers={
-            "Authorization": f"Bearer {admin_token()}",
-            "Cookie": f"CF_Authorization={access_cookie()}",
-            "User-Agent": USER_AGENT,
-        },
-    )
+    headers = {
+        "Authorization": f"Bearer {admin_token()}",
+        "User-Agent": USER_AGENT,
+    }
+    # The service token first: it is the one that works with no browser on the
+    # machine at all. Reading the cookie jar is only attempted when there is no
+    # service token, because on a headless run it can only fail.
+    pair = service_token()
+    if pair:
+        headers["CF-Access-Client-Id"], headers["CF-Access-Client-Secret"] = pair
+    else:
+        headers["Cookie"] = f"CF_Authorization={access_cookie()}"
+    req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             content_type = resp.headers.get("Content-Type", "")
@@ -154,8 +202,7 @@ def fetch_admin_json(path: str, timeout: int = 30) -> dict:
     except urllib.error.HTTPError as e:
         if e.code in (301, 302, 303, 307, 308, 403):
             raise AccessError(
-                f"Cloudflare Access refused {path} (HTTP {e.code}).\n"
-                "  The sign-in has expired. Open the admin in Chrome, sign in, and retry."
+                f"Cloudflare Access refused {path} (HTTP {e.code}).\n  " + _retry_hint()
             )
         raise AccessError(f"{path} failed: HTTP {e.code} {e.reason} — {e.read().decode(errors='replace')[:400]}")
     except urllib.error.URLError as e:
@@ -163,8 +210,7 @@ def fetch_admin_json(path: str, timeout: int = 30) -> dict:
 
     if "application/json" not in content_type:
         raise AccessError(
-            f"Cloudflare Access served a sign-in page instead of {path}.\n"
-            "  The session has expired. Open the admin in Chrome, sign in, and retry."
+            f"Cloudflare Access served a sign-in page instead of {path}.\n  " + _retry_hint()
         )
 
     payload = json.loads(body)
