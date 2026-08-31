@@ -1,5 +1,6 @@
 """Build the gold layer: business-ready aggregates over silver.orders / silver.order_items."""
 
+import csv
 import re
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
@@ -10,6 +11,13 @@ import duckdb
 ROOT_DIR = Path(__file__).parent.parent
 DB_FILE = ROOT_DIR / "warehouse.duckdb"
 ORDER_HISTORY_DIR = ROOT_DIR / "data" / "order_history"
+
+# The owner's own price sheet, lifted from the Control Room report. It carries
+# the Zomato list price ("do not change"), the current landing price after the
+# offer ("SET THIS price"), the local price and the making cost -- all of them
+# decided by the owner rather than reverse-engineered from bills. When an item
+# is in here, this file wins over anything inferred below.
+PRICE_SHEET_FILE = ROOT_DIR / "data" / "price_sheet.csv"
 
 WEEK_FILE_RE = re.compile(r"order_history_(\d{8})_(\d{8})\.csv$")
 
@@ -110,9 +118,73 @@ def _mode(values):
     return Counter(rounded).most_common(1)[0][0]
 
 
+# Prefixes the Zomato menu editor bolts onto a name to decorate it. They are
+# marketing, not identity: the same pizza appears with and without them in the
+# same export.
+_DECORATION_RE = re.compile(r"^[^\w(]+")
+_BADGE_RE = re.compile(r"^(most ordered|bestseller)\s+", re.I)
+
+
+def _price_key(name):
+    """A name reduced to what identifies the dish: base name plus size.
+
+    Size is kept -- Classic French Fries [Small] and [Large] are two products
+    at two prices, and collapsing them would price a small portion as a large
+    one. Everything else (emoji, "Most Ordered", trailing bracketed
+    descriptions like "(7\u201d Pizza + Small Fries)") is dropped.
+    """
+    n = _DECORATION_RE.sub("", name or "").strip()
+    n = _BADGE_RE.sub("", n).strip()
+    m = re.search(r"\[([^\]]*)\]", n)
+    size = m.group(1).strip().lower() if m else ""
+    base = re.sub(r"\s*\[[^\]]*\]\s*", " ", n)
+    base = re.sub(r"\s*\([^)]*\)\s*$", "", base)
+    return (re.sub(r"\s+", " ", base).strip().lower(), size)
+
+
+def _read_price_sheet():
+    """The owner's price sheet as {item_name: {column: number}}.
+
+    Absent file is not an error -- a fresh clone has no sheet and falls back to
+    inference, which is what this pipeline did for its whole life before the
+    sheet existed. Blank cells are dropped rather than read as zero: an item
+    with no price on the sheet is one the sheet does not cover, and zero is a
+    price.
+    """
+    if not PRICE_SHEET_FILE.exists():
+        return {}
+    numeric = (
+        "zomato_list_price", "zomato_set_price", "local_price",
+        "local_offer_price", "making_cost", "zomato_receipt",
+    )
+    out = {}
+    with PRICE_SHEET_FILE.open(newline="") as f:
+        for row in csv.DictReader(f):
+            name = (row.get("item_name") or "").strip()
+            if not name:
+                continue
+            parsed = {}
+            for col in numeric:
+                raw = (row.get(col) or "").strip()
+                if raw:
+                    try:
+                        parsed[col] = float(raw)
+                    except ValueError:
+                        pass
+            out[name] = parsed
+    return out
+
+
 def build_item_prices(con):
     """Infer a single unit price per item.
 
+    0. sheet: the owner's price sheet (data/price_sheet.csv), where it covers
+       the item. Its `zomato_list_price` is the list price the whole discount
+       calculation is built on, and it is a decision rather than an inference,
+       so nothing below is allowed to overrule it. `zomato_set_price` -- the
+       post-offer landing price -- is carried alongside for the dashboard, not
+       used as the list price: allocating an order's receipts against an
+       already-discounted price would take the discount off twice.
     1. observed: mode of bill_subtotal over orders containing exactly that
        item at quantity 1 (single-item, single-unit orders).
     2. derived: for orders where exactly one item's price is still unknown
@@ -146,12 +218,48 @@ def build_item_prices(con):
     # "listed"/"unknown") the dashboard keys its UI trust language off of.
     prices = {}  # item_name -> (unit_price, confidence, sample_n, method)
 
+    sheet = _read_price_sheet()
+    # The Zomato export decorates its own item names -- a flame or a star in
+    # front of a bestseller, "Most Ordered" bolted on, the size suffix present
+    # on one row and missing on another. The sheet uses the catalogue names.
+    # Matching on a normalised form is what makes 15 of 34 items become 30.
+    sheet_by_key = {}
+    sheet_by_base = defaultdict(list)
+    for name, row in sheet.items():
+        key = _price_key(name)
+        sheet_by_key.setdefault(key, (name, row))
+        sheet_by_base[key[0]].append((name, row))
+    for item_name in all_items:
+        key = _price_key(item_name)
+        hit = sheet_by_key.get(key)
+        if hit is None:
+            # The export sometimes drops the size suffix entirely -- plain
+            # "Herb Paneer Delight Pizza" is the same pizza as the sheet's
+            # "[Regular, 7 inches]" row, because there is only one. Fall back
+            # to the base name ONLY when the sheet has a single size for it:
+            # fries come in Small and Large at different prices, and guessing
+            # which one a sizeless row meant would price half of them wrong.
+            candidates = sheet_by_base.get(key[0], [])
+            hit = candidates[0] if len(candidates) == 1 else None
+        if not hit:
+            continue
+        source_name, row = hit
+        listed = row.get("zomato_list_price")
+        if listed is None:
+            continue
+        prices[item_name] = (
+            listed, "sheet", None,
+            f"data/price_sheet.csv zomato_list_price, matched to '{source_name}'",
+        )
+
     single_item_values = defaultdict(list)
     for order_id, items in orders_by_id.items():
         if len(items) == 1 and items[0][1] == 1 and order_id in bill_subtotal:
             single_item_values[items[0][0]].append(bill_subtotal[order_id])
 
     for item_name, values in single_item_values.items():
+        if item_name in prices:
+            continue  # the sheet already decided this one
         prices[item_name] = (
             _mode(values), "observed", len(values),
             "mode of bill_subtotal, single-item qty=1 orders",
