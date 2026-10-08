@@ -1,3 +1,12 @@
+## 9 October 2026 — ingredient stock archive
+
+Ingredient counting is retired in the live backend. Exported stock_batches and
+stock_moves remain historical snapshots; do not treat them as current balances,
+sales-channel counts or ongoing waste metrics. Preserve existing columns and
+archive ingestion. stock_waitlist remains active for manual menu availability.
+Direct sales, Dough and platform exports remain independent data sources.
+See [current policy](https://github.com/theovenvibe/the-oven-vibe-backend/blob/develop/docs/STOCK_RETIREMENT.md) and [release evidence](https://github.com/theovenvibe/the-oven-vibe-backend/blob/develop/docs/STOCK_RETIREMENT_RELEASE.md).
+
 # Every table in the warehouse
 
 `warehouse.duckdb`, in `the-oven-vibe-data-pipeline/`. Refresh it all with
@@ -17,7 +26,7 @@ duckdb warehouse.duckdb          # or: ./.venv/bin/python -c "import duckdb; ...
 | `bronze` | raw, untransformed, as it arrived | Zomato CSVs + the D1 exports |
 | `silver` | cleaned and typed, one row per real thing | derived from bronze |
 | `gold` | answers — aggregates the dashboard reads | derived from silver |
-| **`d1`** | **a live mirror of Cloudflare D1, raw** | `/admin/api/export/tables` |
+| **`d1`** | **a mirror of exported Cloudflare tables, including historical archives** | `/admin/api/export/tables` |
 
 **`d1.*` is the direct/offline business. `silver.orders` and everything gold
 builds on it is Zomato.** They are separate channels that happen to share a
@@ -25,12 +34,12 @@ file — do not join them without deciding, on purpose, that the question really
 spans both. `gold.combined_weekly_sales` is the one place that unions them,
 and it unions rather than joins.
 
-## `d1` — live Cloudflare tables (the direct business)
+## `d1` — exported Cloudflare snapshots (the direct business)
 
 | table | rows | what it answers |
 |---|---|---|
-| `d1.stock_moves` | 28 | every piece of stock in or out, with `reason` (`sold`, `wasted`, `correction`) and `channel` |
-| `d1.stock_batches` | 9 | what was bought, when, what it cost, and the best-before |
+| `d1.stock_moves` | 28 | historical ingredient movements; not current sales or stock |
+| `d1.stock_batches` | 9 | historical batches and best-before; balances are retired |
 | `d1.customer_phones` | 75 | second numbers linked to one customer |
 | `d1.automated_sends` | 28 | which automated push went to whom, and whether it landed |
 | `d1.store_state_log` | 17 | every time the kitchen opened or closed, and why |
@@ -86,7 +95,11 @@ Every `d1` table carries a `synced_at` column — when that snapshot was taken.
 `bronze.dough_balances` (11), `bronze.direct_orders_raw` (7),
 `bronze.dough_referrals` (0).
 
-## Worked example
+## Historical worked example — pre-retirement snapshot
+
+The old query below is an archival example, not a current operating report.
+For later archive audits, account for undone_at where present so reversed moves
+are not counted as sales or waste. Row counts on this page remain dated samples.
 
 Sold against wasted, per ingredient — a question the warehouse could not
 answer before the `d1` schema existed:

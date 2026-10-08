@@ -1,3 +1,12 @@
+## 9 October 2026 — ingredient stock archive
+
+Ingredient counting is retired in the live backend. Exported stock_batches and
+stock_moves remain historical snapshots; do not treat them as current balances,
+sales-channel counts or ongoing waste metrics. Preserve existing columns and
+archive ingestion. stock_waitlist remains active for manual menu availability.
+Direct sales, Dough and platform exports remain independent data sources.
+See [current policy](https://github.com/theovenvibe/the-oven-vibe-backend/blob/develop/docs/STOCK_RETIREMENT.md) and [release evidence](https://github.com/theovenvibe/the-oven-vibe-backend/blob/develop/docs/STOCK_RETIREMENT_RELEASE.md).
+
 # Syncing the warehouse
 
 ## The short version
@@ -16,13 +25,13 @@ signed in to the admin** — see below for why.
 |---|---|---|
 | Confirmed direct orders + their items | `silver.direct_orders`, `silver.direct_order_items` | `/admin/api/export/orders` |
 | Dough ledger, balances, referrals | `silver.dough_*`, `silver.referrals` | `/admin/api/export/dough` |
-| **Everything else in D1, raw** — stock batches and moves, campaigns and claims, rejected orders, demand signals, kitchen open/close history, settings | **`d1.*`** | `/admin/api/export/tables` |
+| **Everything else in D1, raw** — historical stock batches and moves, campaigns and claims, rejected orders, demand signals, kitchen open/close history, settings | **`d1.*`** | `/admin/api/export/tables` |
 | Zomato weekly exports | `bronze.*`, `silver.orders`, `gold.*` | CSVs on disk |
 
 The `d1` schema is its own stream. **Zomato is a separate business channel**
 that happens to land in the same DuckDB file — nothing in `d1.*` is joined to
-it, and nothing should be. `d1.stock_moves` means "the live table in
-Cloudflare", never something derived from a CSV.
+it, and nothing should be. `d1.stock_moves` is an exported historical archive from Cloudflare, never
+something derived from a CSV or a current stock/sales balance.
 
 Two things are deliberately withheld from `d1.*`: the push subscription keys
 (`endpoint`, `p256dh`, `auth`), which are credentials for sending
